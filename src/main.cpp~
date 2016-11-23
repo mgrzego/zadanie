@@ -1,0 +1,283 @@
+#include <iostream>
+#include <dlfcn.h>
+#include <cassert>
+#include "Interp4Command.hh"
+#include "DronPose.hh"
+#include <vector>
+#include <map>
+#include <string>
+#include <fstream>
+#include <sstream>
+#include <cstring>
+#include <iomanip>
+#include <math.h>
+#include <string.h>
+
+
+using std::cout;
+using std::cerr;
+using std::endl;
+using namespace std;
+
+#define LINE_SIZE 512
+#define LINE_LEN 100
+
+
+class Wtyczka 
+{
+  public:
+   /*!
+    * \brief Usuwa wszystkie obiekty z listy.
+    */
+    Wtyczka(): lib_handle(NULL) {}
+   /*!
+    * \brief Powinien zwolnić bilbiotekę, z którą jest skojarzony
+    */
+    ~Wtyczka() { if (lib_handle) dlclose(lib_handle); }
+   /*!
+    * \brief Otwiera dana biblioteke i inicjalizuje obiekt.
+    */
+
+    void setLib(void  *lib_handle) {this->lib_handle = lib_handle;}
+    void setFun(void  *fun) {fun_CreateCmd = *reinterpret_cast<Interp4Command* (**)(void)>(&fun);}
+
+    Interp4Command * CreateCmd() const { return fun_CreateCmd(); }
+    void printSyntax()
+    {
+      Interp4Command* cmd = CreateCmd();
+      cmd->PrintSyntax();
+      delete cmd;
+    }
+  private:
+   /*!
+    * \brief Uchwyt do biblioteki dynamicznie konsolidowanej
+    *
+    *  Pole zawiera wskaźnik będący uchwytem do załadowanej
+    *  biblioteki dynamicznie konsolidowanej.
+    *  Wszystkie pozostałe pola tej klasy muszą zawierać wskaźniki
+    *  do funkcji z tej właśnie biblioteki.
+    */
+    void  *lib_handle; 
+   /*!
+    * \brief Wskaźnik na funkcję zwracającą nazwę polecenia
+    *
+    *  Wskaźnik na funkcję zwracającą nazwę polecenia,
+    *  które zdefiniowane jest w danej bibliotece.
+    */   
+  Interp4Command *(*fun_CreateCmd)(void);
+
+};
+
+DronPose Dron1;
+Wektor3D Wsp1;
+std::map<std::string, Wtyczka*> wtyczki;
+std::vector<Interp4Command*> komendy;
+
+
+int wczytaj_wtyczke(std::string name)
+{
+  void *pLibHnd = dlopen(name.c_str(),RTLD_LAZY);
+  void *pFun;
+
+  if (!pLibHnd) {
+    cerr << "!!! Brak wtyczki: " << name << endl;
+    return 1;
+  }
+
+
+  pFun = dlsym(pLibHnd,"CreateCmd");
+  if (!pFun) {
+    cerr << "!!! Nie znaleziono funkcji CreateCmd" << endl;
+    return 1;
+  }
+  Wtyczka* lib = new Wtyczka();
+  lib->setLib(pLibHnd);
+  lib->setFun(pFun);
+
+  Interp4Command* cmd = lib->CreateCmd();
+  cmd->PrintSyntax();
+  std::string cmd_name = cmd->GetCmdName();
+  std::cout << "dodano polecenie dla : " << cmd_name << "\n";
+
+  wtyczki[cmd_name] = lib;
+  delete cmd;
+  return 0;
+}
+
+int wczytaj_wtyczke()
+{
+  std::cout << "podaj nazwe wtyczki: ";
+  std::string name;
+  std::cin >> name;
+  return wczytaj_wtyczke("libs/" + name);
+}
+
+int usun_wtyczke()
+{
+  std::cout << "podaj nazwe polecenia: ";
+  std::string name;
+  std::cin >> name;
+  if(wtyczki.count(name))
+  {
+    delete wtyczki[name];
+    wtyczki.erase(name);
+    return 0;
+  }
+  return 1;
+}
+
+
+void wyczysc_wtyczki()
+{
+  for(auto lib : wtyczki)
+    delete lib.second;
+  wtyczki.clear();
+}
+
+void wyczysc_komendy()
+{
+  for(int i = 0; i < komendy.size(); i++)
+    delete komendy[i];
+  komendy.clear();
+}
+//Wyswietlanie instrucji z pliku i sprawdzanie poprawnosci
+int przepreprcesoruj(const char* fileName, std::istringstream &iSStream)
+{
+  std::string cmdForPreproc = "cpp -P ";
+  char line[LINE_SIZE];
+  std::ostringstream outTmpStrm;
+  cmdForPreproc += fileName;
+  FILE* pProc = popen(cmdForPreproc.c_str(),"r");
+  if (!pProc) return false;
+  while (fgets(line,LINE_SIZE,pProc))
+  {
+    outTmpStrm << line;
+  }
+  iSStream.str(outTmpStrm.str());
+  return pclose(pProc);
+}
+
+int wczytaj_polecenia(std::istringstream& i_stream)
+{
+  wyczysc_komendy();
+  std::string Keyword;
+  while (i_stream >> Keyword) 
+  {
+    cout << "Wczytano " << Keyword << "\n";
+    if(wtyczki.count(Keyword))
+    {
+      Interp4Command* cmd = wtyczki[Keyword]->CreateCmd();
+      if(cmd)
+      {
+        cmd->ReadParams(i_stream);
+        komendy.push_back(cmd);
+      }
+      else
+        return 2;
+    }
+    else
+      return 1;
+  }
+  return 0;
+}
+
+void pokaz_polecenia()
+{
+  for(auto& cmd : komendy)
+  {
+    cmd->PrintCmd();
+  }
+}
+
+
+int wczytaj_polecenia()
+{  
+  std::cout << "podaj nazwe pliku z komendami: ";
+  std::string name;
+  std::cin >> name;
+  std::istringstream i_stream;
+  przepreprcesoruj(name.c_str(), i_stream);
+  return wczytaj_polecenia(i_stream);
+}
+
+void wyswietl_drona()
+{
+double x,y,z,a;
+   //Dron1.SetPos_m(0,0,0);
+   //Dron1.SetAngle_deg(0);
+   Wsp1 = Dron1.GetPos_m();
+   cout << "Pozycja:" << endl << Wsp1.x() << endl << Wsp1.y() << endl << Wsp1.z() << endl << fmod(360+Dron1.GetAngle_deg(a), 360) << endl;
+}
+
+int wykonaj_polecenia()
+{
+  wyswietl_drona();
+  for(auto& cmd : komendy)
+  {
+    if(!cmd->ExecCmd(&Dron1)) return 1;
+    std::cout << "------------------\n"; 
+  }
+  return 0;
+}
+
+int main()
+{
+  wczytaj_wtyczke("libs/Interp4Fly.so");
+  wczytaj_wtyczke("libs/Interp4Turn.so");
+  wczytaj_wtyczke("libs/Interp4Rotate.so");
+
+
+  std::vector<std::string> options = {"0 - Wczytaj", "1 - Wykonaj wczytane", 
+  "2 - Pokaz wczytane", "3 - Pokaz dostepne", "4 - Dodaj", "5 - Usun",
+  "k - Koniec"};
+
+  bool program_end = false;
+  char option;
+
+  while(!program_end)
+  {
+    for(unsigned int i = 0; i < options.size(); i++)
+    {
+      std::cout << options[i] << "\n";
+    }
+    std::cin >> option;
+
+    if(option == '0')
+    {
+      if(wczytaj_polecenia() != 0)
+        cout << "Nie udalo sie wczyatc\n";
+    }
+    else if (option == '1')
+    {
+      wykonaj_polecenia();
+    }
+    else if(option == '2')
+    {
+      pokaz_polecenia();
+    }
+    else if(option == '3')
+    {
+      for(auto lib : wtyczki)
+       {
+         lib.second->printSyntax();
+         std::cout << "\n";
+       }
+    }
+    else if(option == '4')
+    {
+      if(wczytaj_wtyczke() != 0)
+        cout << "Nie ma wtyczki dla takiego polecenia\n";
+    }
+    else if(option == '5')
+    {
+        if(usun_wtyczke())
+          cout << "Nie ma wtyczki dla takiego polecenia\n";
+    }
+    else if (option == 'k')
+      program_end = true;
+  } 
+
+  wyczysc_komendy();
+  wyczysc_wtyczki();
+  return 0;
+}
