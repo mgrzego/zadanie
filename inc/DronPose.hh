@@ -8,7 +8,7 @@
  * \file
  * \brief Definicja klasy DronPose
  *
- * Plik zawiera definicję klasy DronPose
+ * Plik zawiera definicję klasy DronPose.
  */
 
 /*!
